@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+# A tool to encrypt values for use with the MariaDB Enterprise API
+# Required: openssl (with support for aes-128-cbc)
+
+# This file is distributed as part of the SkySQL Cloud Data Suite.  It is free
+# software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation,
+# version 2.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc., 51
+# Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+# Copyright 2013 (c) SkySQL Ab
+#
+# Author: Kolbe Kegel
+
+usage(){
+    echo "Usage: $0 <text> <key>"
+}
+
+debug=0
+hash=0
+
+# text to encrypt
+if [[ $1 ]]; then
+    t="$1"; 
+else
+    usage >&2
+    exit 1
+fi
+
+if [[ $2 ]]; then
+    key="$2";
+else
+    usage >&2
+    exit 1
+fi
+
+#alternative iv generation if you don't like the dd call...
+#iv=""; for ((i=0;i<16;i++)); do iv="$iv$(printf "%.2x" "$((RANDOM%(255-32) + 32))")"; done
+
+if ! iv=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | xxd -p); then
+    echo "Failed to set iv." >&2
+    exit 2
+fi
+
+# these had caused some problems in the past
+#iv="335c8a54582d8cb623bdc9bb4a5056eb"
+#iv="335c8a54582d8cb623bdc9bb4a50560a"
+#iv="0a5c8a54582d8cb623bdc9bb4a5056eb"
+#iv="005c8a54582d8cb623bdc9bb4a5056eb"
+
+(( debug )) && echo "iv: $iv" >&2
+
+if ! enc=$(printf "%s" "$t" | openssl enc -aes-128-cbc -nosalt -K "$key" -iv "$iv" |xxd -p); then
+    echo "Failed to encode text." >&2
+    exit 2
+fi
+
+(( debug )) && echo "enc: $enc" >&2
+
+# hashing scheme as proposed in http://bugs.skysql.com/show_bug.cgi?id=324
+if (( hash )); then
+    if ! sha1=$(printf "%s%s%s" "$iv" "$key" "$(printf "%s" "$t" | xxd -p)" | xxd -r -p | openssl sha1); then
+        echo "Failed to get sha1 hash." >&2
+        exit 2
+    fi
+
+    (( debug )) && echo "sha1: $sha1" >&2
+else
+    sha1=""
+fi
+
+if ! c=$(printf "%s%s%s" "$sha1" "$iv" "$enc" | xxd -p -r | openssl base64); then
+    echo "Failed to base64-encode result." >&2
+    exit 2
+fi
+
+c=${c/$'\n'}
+
+(( debug )) && echo "cipher: $c" >&2
+
+
+printf "%s\n" "$c"
+
+# this ought to decrypt it
+#php -r '$c=base64_decode($argv[2]); $k=pack("H*",$argv[1]); $s=mcrypt_get_iv_size(MCRYPT_RIJNDAEL_128, MCRYPT_MODE_CBC); print rtrim(mcrypt_decrypt(MCRYPT_RIJNDAEL_128,$k,substr($c,$s),MCRYPT_MODE_CBC,substr($c,0,$s)),"\0..\32")."\n";' "$key" "$c"

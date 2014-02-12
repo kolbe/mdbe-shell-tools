@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+# A tool for interacting with the MariaDB Enterprise API.
+# Required: bash4, curl
+# Suggested: jq or python (for JSON pretty-printing)
+
+# This file is distributed as part of the SkySQL Cloud Data Suite.  It is free
+# software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation,
+# version 2.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc., 51
+# Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+# Copyright 2013 (c) SkySQL Ab
+#
+# Author: Kolbe Kegel
+
+# Set these values as appropriate:
+
+host="http://192.168.30.39/restfulapi/"
+k="1"
+key="c6557ae5dc6d086ddd91d31fb8ae0898"
+
+usage() {
+    echo "Usage: $0 [-p|-r] <method> <uri> [parameter=value] ..."
+}
+
+# Usage examples:
+#
+# Get nodeid, name, and state of all nodes in system 1:
+#   mdbeapi get system/1/node fields=nodeid,name,state
+# Add a new node to system 1:
+#   mdbeapi post system/1/node name=db2 privateip=192.168.30.32
+# Execute "connect" command on node 2 of system 1:
+#   mdbeapi post command/connect systemid=1 nodeid=2 username=myuser parameters=rootpassword="$(mdbeapi-enc rootpass 1f8d9e040e65d7b105538b1ed0231770)"
+
+# use -p *as first argument* to force pretty-printing (via jq tool or python)
+# use -r *as first argument* to force raw output
+
+
+
+if (( ${BASH_VERSINFO[0]} < 4 )); then
+    echo "This script requires bash 4 or higher (you have $BASH_VERSION)." >&2
+    exit 1
+fi
+
+if [[ ! $1 ]] || [[ ! $2 ]]; then 
+    usage
+    exit 1
+fi
+
+case "$1" in
+    -p) pretty=1; shift ;;
+    -r) raw=1; shift ;;
+esac
+
+if [[ $1 ]]; then
+    method="${1^^}"
+fi
+
+if [[ $2 ]]; then
+    uri="${2#/}"
+else
+    usage
+    exit 2
+fi
+
+shift 2
+
+
+# Handle md5 tool on OS X, use md5sum elsewhere
+if ! type -p md5sum >/dev/null 2>&1; then
+    md5sum(){ md5; }
+fi
+
+
+auth_uri="${uri%%\?*}"
+auth_uri="${auth_uri%/}"
+#auth_uri="restfulapi/$auth_uri"
+
+# RFC822 date
+date=$(date '+%a, %d %b %Y %T %z')
+auth_hash=$(printf '%s' "${auth_uri}${key}${date}" | md5sum | awk '{print $1}')
+
+auth="api-auth-$k-$auth_hash"
+
+if [[ $1 == '{'* ]]; then
+    if (( $# > 1 )); then
+        echo "Warning: JSON detected, but with multiple positional parameters." >&2
+    fi
+    curlargs=( --data "$*")
+else
+    curlargs=( --data-urlencode suppress_response_codes=true )
+    [[ $method == "GET" ]] && curlargs+=('-G')
+    for arg; do
+        curlargs+=("--data-urlencode")
+        curlargs+=("$arg")
+    done
+fi
+
+
+# Use a few different options for json pretty-printing
+
+# set up the fall-through... just send it to stdout
+json(){ cat; }
+# skip all this if we are not writing to a tty
+if [[ $raw ]] || [[ ! -t 1 ]] && ! [[ $pretty ]] ; then :;
+elif command -v jq >/dev/null; then
+    json(){ jq .; }
+elif command -v python >/dev/null && python -c 'import sys; sys.exit(not sys.version_info[:2] >= (2,6))'; then
+    json(){ python -mjson.tool; }
+fi
+
+
+curl -s -S -X "$method" -H "Date:$date" -H "Authorization:$auth" "$host$uri" -H "Accept:application/json" "${curlargs[@]}" | json
+exit "${PIPESTATUS[0]}"

@@ -1,0 +1,102 @@
+#!/usr/bin/env python
+
+# A tool for interacting with the MariaDB Enterprise API.
+# Required: Requests (http://docs.python-requests.org/en/latest/)
+
+# This file is distributed as part of the SkySQL Cloud Data Suite.  It is free
+# software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation,
+# version 2.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc., 51
+# Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+# Copyright 2013 (c) SkySQL Ab
+#
+# Author: Kolbe Kegel
+
+import requests
+import sys
+import hashlib
+import json
+import re
+import email.utils #for rfc2822 dates
+
+# Set these values as appropriate:
+
+host="http://192.168.30.39/restfulapi/"
+k="1"
+key="c6557ae5dc6d086ddd91d31fb8ae0898"
+
+usage="Usage: "+sys.argv[0]+" <method> <uri> [parameter=value] ..."
+
+# Usage examples:
+#
+# Get nodeid, name, and state of all nodes in system 1:
+#   mdbeapi get system/1/node fields=nodeid,name,state
+# Add a new node to system 1:
+#   mdbeapi post system/1/node name=db2 privateip=192.168.30.32
+# Execute "connect" command on node 2 of system 1:
+#   mdbeapi post command/connect systemid=1 nodeid=2 username=myuser parameters=rootpassword="$(mdbeapi-enc rootpass 1f8d9e040e65d7b105538b1ed0231770)"
+
+if len(sys.argv) < 3:
+    sys.stderr.write(usage+"\n")
+    sys.exit(2)
+
+date=email.utils.formatdate()
+
+method=sys.argv[1].lower()
+uri=sys.argv[2]
+
+auth_uri=re.match('/*(.*?)/*$',uri).group(1)
+
+auth_hash=hashlib.md5(auth_uri+key+date).hexdigest()
+auth="-".join(["api-auth",k,auth_hash])
+
+headers = {
+    'Accept': 'application/json',
+    'Date': date,
+    'Authorization': auth
+}
+
+data = {}
+for p in sys.argv[3:]:
+    pr = re.match('(.*?)=(.*)',p)
+    k=pr.group(1)
+    v=pr.group(2)
+    if pr:
+        if pr.group(1) in data:
+            #data[k].append(v)
+            print >> sys.stderr, "Duplicate parameter '"+k+"' overwrites previous value '"+data[k]+"'\n"
+        #else:
+            #data[k] = [v]
+        data[k] = v
+
+params = {
+        'method': method,
+        'url': host+uri,
+        'headers': headers
+}
+if method == "get":
+    params['params']=data
+else:
+    params['data']=data
+
+r = requests.request(**params)
+t = r.text
+try:
+    j = json.loads(t)
+    print json.dumps(j, indent=4)
+except ValueError:
+    sys.stderr.write("API delivered non-JSON response with HTTP code "+str(r.status_code)+":\n\n"+t)
+    sys.exit(3)
+
+if r.status_code>=400:
+    sys.exit(1)
+
